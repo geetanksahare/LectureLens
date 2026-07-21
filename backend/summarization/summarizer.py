@@ -2,25 +2,24 @@
 LectureLens - Transcript Summarizer / Simplifier Module
 ---------------------------------------------------------
 Takes a Whisper transcript (list of timestamped segments) and produces:
-  1. Chunked transcript (grouped into ~500 token blocks, keeping timestamps)
+  1. Chunked transcript (grouped into ~500 word blocks, keeping timestamps)
   2. Technical summary (concise, keeps original terminology)
   3. Simplified "ELI-Junior" version (plain English, analogies, no jargon)
+  4. Glossary of jargon terms (per-chunk, plus a clean deduplicated flat list)
 
-Requires: pip install groq --break-system-packages
+Requires: pip install groq python-dotenv
 Get a free API key from https://console.groq.com
 """
 
-import os
 import json
 from groq import Groq
+from backend.utils.config import GROQ_API_KEY, MODEL_NAME
 
 # ---------------------------------------------------------
 # 1. SETUP
 # ---------------------------------------------------------
-# Set your key as an environment variable: export GROQ_API_KEY="your_key_here"
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-MODEL = "llama-3.3-70b-versatile"  # free-tier model on Groq
+client = Groq(api_key=GROQ_API_KEY)
+MODEL = MODEL_NAME
 
 
 # ---------------------------------------------------------
@@ -117,7 +116,7 @@ SIMPLIFIED VERSION:"""
 
 
 # ---------------------------------------------------------
-# 6. GLOSSARY EXTRACTION (bonus - jargon + definitions + timestamp)
+# 6. GLOSSARY EXTRACTION (jargon + definitions + timestamp, per chunk)
 # ---------------------------------------------------------
 def extract_glossary(chunk_text, start_time):
     prompt = f"""Identify technical or domain-specific terms in this lecture segment
@@ -189,7 +188,50 @@ def process_transcript(segments):
 
 
 # ---------------------------------------------------------
-# 8. EXAMPLE USAGE
+# 8. FLATTEN + DEDUPE GLOSSARY (clean final glossary for display/export)
+# ---------------------------------------------------------
+def flatten_glossary(processed_result):
+    """
+    Takes the output of process_transcript() and returns one clean,
+    deduplicated glossary list sorted by when the term first appeared.
+
+    Input:  {"chunks": [{"glossary": [...]}, {"glossary": [...]}, ...]}
+    Output: [
+        {"term": "recursion", "definition": "...", "timestamp": 12.5},
+        {"term": "base case", "definition": "...", "timestamp": 45.0},
+        ...
+    ]
+    """
+    seen_terms = set()
+    flat_glossary = []
+
+    for chunk in processed_result["chunks"]:
+        for term in chunk["glossary"]:
+            term_key = term.get("term", "").lower().strip()
+
+            if not term_key or term_key in seen_terms:
+                continue
+
+            seen_terms.add(term_key)
+            flat_glossary.append(term)
+
+    return sorted(flat_glossary, key=lambda t: t["timestamp"])
+
+
+# ---------------------------------------------------------
+# 9. SAVE FLATTENED GLOSSARY TO JSON (for Streamlit UI / export)
+# ---------------------------------------------------------
+def save_glossary(flat_glossary, output_path="outputs/glossary.json"):
+    import os
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(flat_glossary, f, indent=2, ensure_ascii=False)
+    print(f"Glossary saved to {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------
+# 10. EXAMPLE USAGE
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # Example: this would normally come from your Whisper output
@@ -206,3 +248,10 @@ if __name__ == "__main__":
 
     output = process_transcript(sample_segments)
     print(json.dumps(output, indent=2))
+
+    clean_glossary = flatten_glossary(output)
+    save_glossary(clean_glossary)
+
+    print("\nFinal deduplicated glossary:")
+    for entry in clean_glossary:
+        print(f"[{entry['timestamp']}s] {entry['term']}: {entry['definition']}")
