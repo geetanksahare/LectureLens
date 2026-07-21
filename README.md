@@ -215,8 +215,8 @@ LectureLens is designed to be completely free for learning and academic projects
 
 ## 🤝 Contributors
 
-- **Geetank Sahare**
 - **Anjali Pal**
+- **Geetank Sahare**
 - **Sahil Singh**
 
 Final Year B.Tech Project
