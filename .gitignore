@@ -24,6 +24,9 @@ data/audio/
 # Streamlit
 .streamlit/
 
+# Database (personal/local data - don't commit user accounts or history)
+backend/database/*.db
+
 # OS files
 .DS_Store
 Thumbs.db
