@@ -8,3 +8,4 @@ pysrt
 webvtt-py
 python-dotenv
 ffmpeg-python
+bcrypt
