@@ -14,8 +14,8 @@ Get a free API key from https://console.groq.com
 import os
 import json
 from groq import Groq
-from backend.utils.config import GROQ_API_KEY, MODEL_NAME, CHUNK_MAX_WORDS, GLOSSARY_PATH
-from backend.utils import prompts
+from utils.config import GROQ_API_KEY, MODEL_NAME, CHUNK_MAX_WORDS, GLOSSARY_PATH
+from utils import prompts
 
 # ---------------------------------------------------------
 # 1. SETUP

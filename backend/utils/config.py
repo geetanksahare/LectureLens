@@ -31,7 +31,7 @@ if not GROQ_API_KEY:
 # ---------------------------------------------------------
 # LLM MODEL (used by summarizer.py and quiz_generator.py)
 # ---------------------------------------------------------
-MODEL_NAME = "llama-3.3-70b-versatile"
+MODEL_NAME = "openai/gpt-oss-20b"
 
 # ---------------------------------------------------------
 # WHISPER SETTINGS (used by transcriber.py)

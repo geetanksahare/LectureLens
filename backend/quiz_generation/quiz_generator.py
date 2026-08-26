@@ -13,14 +13,14 @@ Get a free API key from https://console.groq.com
 import os
 import json
 from groq import Groq
-from backend.utils.config import (
+from utils.config import (
     GROQ_API_KEY,
     MODEL_NAME,
     QUIZ_DIR,
     MCQS_PER_CHUNK,
     SHORT_ANSWERS_PER_CHUNK,
 )
-from backend.utils import prompts
+from utils import prompts
 
 client = Groq(api_key=GROQ_API_KEY)
 MODEL = MODEL_NAME

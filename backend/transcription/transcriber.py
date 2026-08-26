@@ -17,7 +17,7 @@ Requires: pip install faster-whisper
 import os
 import json
 from faster_whisper import WhisperModel
-from backend.utils.config import (
+from utils.config import (
     WHISPER_MODEL_SIZE,
     WHISPER_DEVICE,
     WHISPER_COMPUTE_TYPE,

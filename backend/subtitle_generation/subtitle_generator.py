@@ -14,7 +14,7 @@ Expected input format (from transcriber.py):
 """
 
 import os
-from backend.utils.config import SUBTITLES_DIR
+from utils.config import SUBTITLES_DIR
 
 
 # ---------------------------------------------------------
