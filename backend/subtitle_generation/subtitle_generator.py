@@ -15,6 +15,7 @@ Expected input format (from transcriber.py):
 
 import os
 from utils.config import SUBTITLES_DIR
+import time
 
 
 # ---------------------------------------------------------

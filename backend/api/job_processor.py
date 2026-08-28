@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from api.supabase_client import supabase
 from api.storage import download_video, upload_output
 
+from api.services.rag_service import generate_and_store_embeddings
 from api.services.audio_service import run_audio_extraction
 from api.services.transcription_service import run_transcription
 from api.services.subtitle_service import run_subtitle_generation
@@ -47,12 +48,25 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
         run_audio_extraction(video_local_path, audio_path)
 
         transcript_json_path = os.path.join(work_dir, "transcript.json")
-        segments = run_transcription(audio_path, transcript_json_path)
+        segments = run_transcription(audio_path, transcript_json_path, work_dir=work_dir)
 
         if not segments:
             raise RuntimeError("Transcription produced no segments — audio may be silent or unsupported.")
 
         update_lecture_status(lecture_id, "processing", full_transcript=json.dumps(segments, ensure_ascii=False))
+        
+        try:
+            generate_and_store_embeddings(lecture_id, segments)
+        except Exception as e:
+            print(f"Warning: embedding generation failed for lecture {lecture_id}: {e}")
+        
+        if "transcript" in requested_outputs:
+            transcript_path_local = os.path.join(work_dir, "transcript.json")
+            with open(transcript_path_local, "w", encoding="utf-8") as f:
+                json.dump({"segments": segments}, f, ensure_ascii=False, indent=2)
+            transcript_storage_path = f"{user_id}/{lecture_id}/transcript.json"
+            upload_output(transcript_path_local, transcript_storage_path, content_type="application/json")
+            save_job_output(lecture_id, "transcript", storage_path=transcript_storage_path)
 
         if "subtitles" in requested_outputs:
             paths = run_subtitle_generation(segments, output_dir=work_dir, filename="lecture")
@@ -63,17 +77,36 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
             save_job_output(lecture_id, "subtitles_srt", storage_path=srt_path)
             save_job_output(lecture_id, "subtitles_vtt", storage_path=vtt_path)
 
-        if "summary" in requested_outputs:
-            processed, glossary = run_summary(segments)
-            summary_path_local = os.path.join(work_dir, "summary.json")
-            with open(summary_path_local, "w", encoding="utf-8") as f:
-                json.dump({"chunks": processed["chunks"], "glossary": glossary}, f, ensure_ascii=False, indent=2)
-            summary_storage_path = f"{user_id}/{lecture_id}/summary.json"
-            upload_output(summary_path_local, summary_storage_path, content_type="application/json")
-            save_job_output(lecture_id, "summary", storage_path=summary_storage_path)
+        wants_summary = "summary" in requested_outputs
+        wants_glossary = "glossary" in requested_outputs
+        wants_quiz = "quiz" in requested_outputs
 
-        if "quiz" in requested_outputs:
-            quiz_result = run_quiz(segments)
+        processed = None
+
+        if wants_summary or wants_glossary or wants_quiz:
+            # Single shared pass: one LLM call per chunk covers
+            # summary + glossary + quiz together instead of two
+            # separate passes re-chunking and re-calling the LLM.
+            processed, glossary = run_summary(segments, include_quiz=wants_quiz)
+
+            if wants_summary:
+                summary_path_local = os.path.join(work_dir, "summary.json")
+                with open(summary_path_local, "w", encoding="utf-8") as f:
+                    json.dump({"chunks": processed["chunks"]}, f, ensure_ascii=False, indent=2)
+                summary_storage_path = f"{user_id}/{lecture_id}/summary.json"
+                upload_output(summary_path_local, summary_storage_path, content_type="application/json")
+                save_job_output(lecture_id, "summary", storage_path=summary_storage_path)
+
+            if wants_glossary:
+                glossary_path_local = os.path.join(work_dir, "glossary.json")
+                with open(glossary_path_local, "w", encoding="utf-8") as f:
+                    json.dump({"glossary": glossary}, f, ensure_ascii=False, indent=2)
+                glossary_storage_path = f"{user_id}/{lecture_id}/glossary.json"
+                upload_output(glossary_path_local, glossary_storage_path, content_type="application/json")
+                save_job_output(lecture_id, "glossary", storage_path=glossary_storage_path)
+
+        if wants_quiz:
+            quiz_result = run_quiz(segments, processed=processed)
             quiz_path_local = os.path.join(work_dir, "quiz.json")
             with open(quiz_path_local, "w", encoding="utf-8") as f:
                 json.dump(quiz_result, f, ensure_ascii=False, indent=2)
@@ -82,9 +115,20 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
             save_job_output(lecture_id, "quiz", storage_path=quiz_storage_path)
 
         update_lecture_status(lecture_id, "done")
+        print(f"{'='*60}")
+        print(f"✅ LECTURE PROCESSING COMPLETE — lecture_id: {lecture_id}")
+        print(f"   Outputs generated: {requested_outputs}")
+        print(f"{'='*60}")
 
     except Exception as e:
-        update_lecture_status(lecture_id, "failed", error_message=str(e))
+        print(f"{'='*60}")
+        print(f"❌ LECTURE PROCESSING FAILED — lecture_id: {lecture_id}")
+        print(f"   Error: {e}")
+        print(f"{'='*60}")
+        try:
+            update_lecture_status(lecture_id, "failed", error_message=str(e))
+        except Exception as log_error:
+            print(f"Additionally failed to log the error to Supabase: {log_error}")
         raise
 
     finally:

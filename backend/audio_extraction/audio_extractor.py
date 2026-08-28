@@ -11,7 +11,7 @@ exact format.
 
 import os
 import subprocess
-
+import time
 
 def extract_audio(input_path: str, output_path: str):
     """
@@ -64,3 +64,40 @@ def get_audio_duration(path: str):
         return float(result.stdout.strip())
     except (ValueError, FileNotFoundError):
         return None
+    
+def split_audio(input_path: str, output_dir: str, segment_seconds: int = 600):
+    """
+    Splits a WAV file into fixed-length segments using FFmpeg,
+    to keep memory usage bounded during Whisper transcription
+    regardless of total audio length.
+
+    Returns a list of (segment_path, start_offset_seconds) tuples.
+    """
+    duration = get_audio_duration(input_path)
+    if duration is None:
+        raise RuntimeError("Could not determine audio duration for splitting.")
+
+    os.makedirs(output_dir, exist_ok=True)
+    segments = []
+    offset = 0
+    index = 0
+
+    while offset < duration:
+        segment_path = os.path.join(output_dir, f"segment_{index:03d}.wav")
+        command = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-ss", str(offset),
+            "-t", str(segment_seconds),
+            "-ac", "1", "-ar", "16000",
+            segment_path,
+        ]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0 or not os.path.exists(segment_path):
+            break
+
+        segments.append((segment_path, offset))
+        offset += segment_seconds
+        index += 1
+
+    return segments

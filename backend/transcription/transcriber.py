@@ -13,7 +13,7 @@ Output format (used by every other module in the pipeline):
 
 Requires: pip install faster-whisper
 """
-
+import time
 import os
 import json
 from faster_whisper import WhisperModel
@@ -124,3 +124,32 @@ if __name__ == "__main__":
     print(f"\nGenerated {len(segments)} segments\n")
     for seg in segments[:5]:
         print(f"[{seg['start']}s -> {seg['end']}s] {seg['text']}")
+        
+def process_audio_chunked(file_path, work_dir, model_size=WHISPER_MODEL_SIZE, language=None, segment_seconds=600):
+    """
+    Splits long audio into fixed-length segments before transcribing,
+    to avoid memory allocation failures on long lecture recordings.
+    Merges segment results into one continuous, correctly-timestamped
+    list of segments.
+    """
+    from audio_extraction.audio_extractor import split_audio
+
+    split_dir = os.path.join(work_dir, "audio_segments")
+    audio_segments = split_audio(file_path, split_dir, segment_seconds=segment_seconds)
+
+    if not audio_segments:
+        # Fallback: file too short to split meaningfully, transcribe directly
+        return process_audio(file_path)
+
+    model = load_model(model_size)
+    all_segments = []
+
+    for segment_path, offset in audio_segments:
+        print(f"Transcribing segment starting at {offset}s...")
+        segs = transcribe_audio(segment_path, model=model, language=language)
+        for seg in segs:
+            seg["start"] += offset
+            seg["end"] += offset
+        all_segments.extend(segs)
+
+    return all_segments
