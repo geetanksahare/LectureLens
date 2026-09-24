@@ -86,19 +86,14 @@ async def create_lecture(
         source_lecture = other_existing.data[0]
         source_lecture_id = source_lecture["id"]
 
-        # Give this user their own private copy of the video
-        new_video_path = f"{user_id}/{uuid.uuid4()}_{file.filename}"
-        try:
-            copy_video(source_lecture["video_storage_path"], new_video_path)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to copy video for deduplication: {str(e)}")
+        # Reuse the same video file already in B2 — no copy needed, saves storage
+        shared_video_path = source_lecture["video_storage_path"]
 
-        # Create a new lectures row for this user, immediately marked done
         try:
             new_lecture_result = supabase.table("lectures").insert({
                 "user_id": user_id,
                 "filename": file.filename,
-                "video_storage_path": new_video_path,
+                "video_storage_path": shared_video_path,
                 "requested_outputs": outputs_list,
                 "status": "done",
                 "content_hash": content_hash,
@@ -109,7 +104,7 @@ async def create_lecture(
         new_lecture = new_lecture_result.data[0]
         new_lecture_id = new_lecture["id"]
 
-        # Copy each existing output into this user's own output folder
+        # Point this user's outputs at the same generated files — no copy needed
         source_outputs = (
             supabase.table("job_outputs")
             .select("output_type, storage_path, content")
@@ -118,20 +113,16 @@ async def create_lecture(
         )
 
         for output in source_outputs.data:
-            if output["storage_path"]:
-                filename_part = output["storage_path"].split("/")[-1]
-                new_output_path = f"{user_id}/{new_lecture_id}/{filename_part}"
-                try:
-                    copy_output(output["storage_path"], new_output_path)
-                    save_job_output(new_lecture_id, output["output_type"], storage_path=new_output_path)
-                except Exception:
-                    continue  # skip any output that fails to copy rather than failing the whole request
-            elif output["content"]:
-                save_job_output(new_lecture_id, output["output_type"], content=output["content"])
+            save_job_output(
+                new_lecture_id,
+                output["output_type"],
+                storage_path=output["storage_path"],
+                content=output["content"],
+            )
 
         print(f"{'='*60}")
         print(f"✅ DUPLICATE DETECTED (cross-user) — new lecture_id: {new_lecture_id}")
-        print(f"   Outputs copied from lecture_id: {source_lecture_id}")
+        print(f"   Reusing shared video + outputs from lecture_id: {source_lecture_id} (no storage duplicated)")
         print(f"{'='*60}")
         return {
             "lecture_id": new_lecture_id,

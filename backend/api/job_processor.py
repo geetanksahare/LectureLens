@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 
 from api.supabase_client import supabase
@@ -13,6 +14,22 @@ from api.services.transcription_service import run_transcription
 from api.services.subtitle_service import run_subtitle_generation
 from api.services.summary_service import run_summary
 from api.services.quiz_service import run_quiz
+
+TIMING_LOG_PATH = os.path.join(tempfile.gettempdir(), "lecturelens_timings.json")
+
+
+def log_timing(lecture_id: str, timings: dict):
+    all_timings = {}
+    if os.path.exists(TIMING_LOG_PATH):
+        with open(TIMING_LOG_PATH, "r") as f:
+            try:
+                all_timings = json.load(f)
+            except json.JSONDecodeError:
+                all_timings = {}
+    all_timings[lecture_id] = timings
+    with open(TIMING_LOG_PATH, "w") as f:
+        json.dump(all_timings, f, indent=2)
+
 
 def update_lecture_status(lecture_id: str, status: str, error_message: str = None, full_transcript: str = None):
     update_data = {"status": status}
@@ -37,6 +54,8 @@ def save_job_output(lecture_id: str, output_type: str, storage_path: str = None,
 
 def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requested_outputs: list, filename: str):
     work_dir = tempfile.mkdtemp(prefix=f"lecture_{lecture_id}_")
+    timings = {}
+    pipeline_start = time.time()
 
     try:
         update_lecture_status(lecture_id, "processing")
@@ -44,22 +63,28 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
         video_local_path = os.path.join(work_dir, filename)
         download_video(video_storage_path, video_local_path)
 
+        t0 = time.time()
         audio_path = os.path.join(work_dir, "audio.wav")
         run_audio_extraction(video_local_path, audio_path)
+        timings["audio_extraction_sec"] = round(time.time() - t0, 2)
 
+        t0 = time.time()
         transcript_json_path = os.path.join(work_dir, "transcript.json")
         segments = run_transcription(audio_path, transcript_json_path, work_dir=work_dir)
+        timings["transcription_sec"] = round(time.time() - t0, 2)
 
         if not segments:
             raise RuntimeError("Transcription produced no segments — audio may be silent or unsupported.")
 
+        timings["audio_duration_sec"] = round(segments[-1]["end"], 2)
+
         update_lecture_status(lecture_id, "processing", full_transcript=json.dumps(segments, ensure_ascii=False))
-        
+
         try:
             generate_and_store_embeddings(lecture_id, segments)
         except Exception as e:
             print(f"Warning: embedding generation failed for lecture {lecture_id}: {e}")
-        
+
         if "transcript" in requested_outputs:
             transcript_path_local = os.path.join(work_dir, "transcript.json")
             with open(transcript_path_local, "w", encoding="utf-8") as f:
@@ -83,10 +108,9 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
 
         processed = None
 
+        t0 = time.time()
+
         if wants_summary or wants_glossary or wants_quiz:
-            # Single shared pass: one LLM call per chunk covers
-            # summary + glossary + quiz together instead of two
-            # separate passes re-chunking and re-calling the LLM.
             processed, glossary = run_summary(segments, include_quiz=wants_quiz)
 
             if wants_summary:
@@ -114,10 +138,15 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
             upload_output(quiz_path_local, quiz_storage_path, content_type="application/json")
             save_job_output(lecture_id, "quiz", storage_path=quiz_storage_path)
 
+        timings["llm_generation_sec"] = round(time.time() - t0, 2)
+        timings["total_pipeline_sec"] = round(time.time() - pipeline_start, 2)
+        log_timing(lecture_id, timings)
+
         update_lecture_status(lecture_id, "done")
         print(f"{'='*60}")
         print(f"✅ LECTURE PROCESSING COMPLETE — lecture_id: {lecture_id}")
         print(f"   Outputs generated: {requested_outputs}")
+        print(f"   Timings: {timings}")
         print(f"{'='*60}")
 
     except Exception as e:
