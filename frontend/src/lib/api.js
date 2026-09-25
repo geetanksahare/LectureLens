@@ -23,7 +23,7 @@ function getToken() {
   return null
 }
 
-async function request(method, path, body, isFormData = false) {
+async function request(method, path, body, isFormData = false, signal) {
   const token = getToken()
   const headers = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -33,6 +33,7 @@ async function request(method, path, body, isFormData = false) {
     method,
     headers,
     body: isFormData ? body : body ? JSON.stringify(body) : undefined,
+    signal,
   })
 
   if (!res.ok) {
@@ -43,15 +44,56 @@ async function request(method, path, body, isFormData = false) {
   return res.json()
 }
 
+function uploadWithProgress(path, formData, { signal, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const token = getToken()
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}${path}`)
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    }
+
+    xhr.onload = () => {
+      let data
+      try { data = JSON.parse(xhr.responseText) } catch { data = {} }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data)
+      } else {
+        reject(new Error(data.detail ?? `HTTP ${xhr.status}`))
+      }
+    }
+
+    xhr.onerror = () => reject(new Error('Network error during upload.'))
+
+    xhr.onabort = () => {
+      const err = new Error('Upload cancelled')
+      err.name = 'AbortError'
+      reject(err)
+    }
+
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); return }
+      signal.addEventListener('abort', () => xhr.abort())
+    }
+
+    xhr.send(formData)
+  })
+}
+
+
 export const api = {
   health: () => request('GET', '/health'),
 
   // Lectures
-  uploadLecture: (file, outputs) => {
+  uploadLecture: (file, outputs, { signal, onProgress } = {}) => {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('requested_outputs', outputs.join(','))
-    return request('POST', '/lectures', fd, true)
+    return uploadWithProgress('/lectures', fd, { signal, onProgress })
   },
   listLectures: () => request('GET', '/lectures'),
   getLecture: (id) => request('GET', `/lectures/${id}`),

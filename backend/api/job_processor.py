@@ -31,16 +31,29 @@ def log_timing(lecture_id: str, timings: dict):
         json.dump(all_timings, f, indent=2)
 
 
-def update_lecture_status(lecture_id: str, status: str, error_message: str = None, full_transcript: str = None):
+def update_lecture_status(lecture_id: str, status: str, error_message: str = None, full_transcript: str = None, processing_seconds: float = None):
     update_data = {"status": status}
     if error_message is not None:
         update_data["error_message"] = error_message
     if full_transcript is not None:
         update_data["full_transcript"] = full_transcript
+    if processing_seconds is not None:
+        update_data["processing_seconds"] = processing_seconds
     if status == "done":
         update_data["processed_at"] = datetime.now(timezone.utc).isoformat()
+        update_data["progress_pct"] = 100
+        update_data["progress_stage"] = "Complete"
 
     supabase.table("lectures").update(update_data).eq("id", lecture_id).execute()
+
+
+def update_lecture_progress(lecture_id: str, pct: int, stage: str):
+    """Pushes a real progress checkpoint so GET /lectures/{id} reflects
+    actual pipeline progress instead of a fixed/fake percentage."""
+    supabase.table("lectures").update({
+        "progress_pct": pct,
+        "progress_stage": stage,
+    }).eq("id", lecture_id).execute()
 
 
 def save_job_output(lecture_id: str, output_type: str, storage_path: str = None, content: str = None):
@@ -59,14 +72,17 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
 
     try:
         update_lecture_status(lecture_id, "processing")
+        update_lecture_progress(lecture_id, 5, "Downloading video")
 
         video_local_path = os.path.join(work_dir, filename)
         download_video(video_storage_path, video_local_path)
+        update_lecture_progress(lecture_id, 15, "Extracting audio")
 
         t0 = time.time()
         audio_path = os.path.join(work_dir, "audio.wav")
         run_audio_extraction(video_local_path, audio_path)
         timings["audio_extraction_sec"] = round(time.time() - t0, 2)
+        update_lecture_progress(lecture_id, 30, "Transcribing lecture (this can take a while)")
 
         t0 = time.time()
         transcript_json_path = os.path.join(work_dir, "transcript.json")
@@ -84,6 +100,8 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
             generate_and_store_embeddings(lecture_id, segments)
         except Exception as e:
             print(f"Warning: embedding generation failed for lecture {lecture_id}: {e}")
+            
+        update_lecture_progress(lecture_id, 60, "Transcription complete — building outputs")
 
         if "transcript" in requested_outputs:
             transcript_path_local = os.path.join(work_dir, "transcript.json")
@@ -106,11 +124,15 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
         wants_glossary = "glossary" in requested_outputs
         wants_quiz = "quiz" in requested_outputs
 
+        update_lecture_progress(lecture_id, 70, "Transcript & subtitles ready")
+
         processed = None
 
         t0 = time.time()
 
         if wants_summary or wants_glossary or wants_quiz:
+            update_lecture_progress(lecture_id, 85, "Summarizing & generating quiz/glossary")
+            
             processed, glossary = run_summary(segments, include_quiz=wants_quiz)
 
             if wants_summary:
@@ -142,7 +164,8 @@ def process_lecture(lecture_id: str, user_id: str, video_storage_path: str, requ
         timings["total_pipeline_sec"] = round(time.time() - pipeline_start, 2)
         log_timing(lecture_id, timings)
 
-        update_lecture_status(lecture_id, "done")
+        total_seconds = round(time.time() - pipeline_start, 2)
+        update_lecture_status(lecture_id, "done", processing_seconds=total_seconds)
         print(f"{'='*60}")
         print(f"✅ LECTURE PROCESSING COMPLETE — lecture_id: {lecture_id}")
         print(f"   Outputs generated: {requested_outputs}")

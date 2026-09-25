@@ -39,14 +39,19 @@ export default function ProcessLecture() {
   const navigate = useNavigate()
   const fileRef  = useRef(null)
   const pollRef  = useRef(null)
+  const abortRef = useRef(null)
 
   const [file, setFile]           = useState(null)
   const [dragOver, setDragOver]   = useState(false)
   const [outputs, setOutputs]     = useState(['transcript', 'subtitles', 'summary', 'quiz'])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [job, setJob]             = useState(null)
   const [pollStatus, setPollStatus] = useState(null)
+  const [progress, setProgress] = useState(0)
+  const [progressStage, setProgressStage] = useState('')
+  const [processingSeconds, setProcessingSeconds] = useState(null)
 
   const startPolling = useCallback((id) => {
     if (pollRef.current) clearInterval(pollRef.current)
@@ -54,12 +59,18 @@ export default function ProcessLecture() {
       try {
         const d = await api.getLecture(id)
         setPollStatus(d.status)
+        setProgress(d.progress_pct ?? 0)
+        setProgressStage(d.progress_stage ?? '')
+        if (d.processing_seconds != null) setProcessingSeconds(d.processing_seconds)
         if (d.status === 'done' || d.status === 'failed') clearInterval(pollRef.current)
       } catch {}
-    }, 3000)
+    }, 2000)
   }, [])
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (abortRef.current) abortRef.current.abort()
+  }, [])
 
   function toggleOutput(id) {
     setOutputs(p => p.includes(id) ? p.filter(o => o !== id) : [...p, id])
@@ -75,15 +86,40 @@ export default function ProcessLecture() {
     if (!file)             { setUploadError('Please select a video file.'); return }
     if (!outputs.length)   { setUploadError('Select at least one output type.'); return }
     setUploadError(''); setUploading(true)
+    setProgress(0); setProgressStage(''); setProcessingSeconds(null)
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    setUploadProgress(0)
     try {
-      const result = await api.uploadLecture(file, outputs)
+      const result = await api.uploadLecture(file, outputs, {
+        signal: controller.signal,
+        onProgress: setUploadProgress,
+      })
       setJob(result)
       setPollStatus(result.status)
+      setProgress(result.progress_pct ?? 0)
+      setProgressStage(result.progress_stage ?? '')
+      setProcessingSeconds(result.processing_seconds ?? null)
       if (result.status !== 'done') startPolling(result.lecture_id)
     } catch (err) {
-      setUploadError(err.message)
+      if (err.name === 'AbortError') {
+        // User clicked Cancel — this is expected, not a real error.
+        setUploadError('')
+      } else {
+        setUploadError(err.message)
+      }
     } finally {
       setUploading(false)
+      setUploadProgress(0)
+      abortRef.current = null
+    }
+  }
+
+  function handleCancelUpload() {
+    if (abortRef.current) {
+      abortRef.current.abort()
     }
   }
 
@@ -91,6 +127,19 @@ export default function ProcessLecture() {
   const step   = STEPS[effectiveStatus]
   const isDone = effectiveStatus === 'done'
   const isFailed = effectiveStatus === 'failed'
+
+  // Real progress from the backend; STEPS is only a fallback for the brief
+  // moment before the first poll response comes back.
+  const displayPct   = isDone ? 100 : isFailed ? 100 : (progress || step?.pct || 5)
+  const displayLabel = isDone ? 'Complete' : isFailed ? 'Processing failed' : (progressStage || step?.label || effectiveStatus)
+
+  function formatDuration(totalSeconds) {
+    if (totalSeconds == null) return null
+    const s = Math.round(totalSeconds)
+    const m = Math.floor(s / 60)
+    const rem = s % 60
+    return m === 0 ? `${rem}s` : `${m}m ${rem}s`
+  }
 
   return (
     <div className="max-w-4xl animate-in fade-in duration-500">
@@ -210,6 +259,14 @@ export default function ProcessLecture() {
                 </>
               )}
             </button>
+            {uploading && (
+              <button 
+                className="px-6 py-3 rounded-xl font-bold text-sm text-red-600 border border-red-200 hover:bg-red-50 transition-colors" 
+                onClick={handleCancelUpload}
+              >
+                Cancel Upload
+              </button>
+            )}
             {file && !uploading && (
               <button 
                 className="px-6 py-3 rounded-xl font-bold text-sm text-gray-600 hover:bg-gray-100 transition-colors" 
@@ -248,9 +305,9 @@ export default function ProcessLecture() {
 
           <div className="mb-2 flex items-center justify-between">
             <span className={`text-sm font-bold ${isFailed ? 'text-red-600' : isDone ? 'text-emerald-600' : 'text-gray-900'}`}>
-              {step?.label ?? effectiveStatus}
+              {displayLabel}
             </span>
-            <span className="text-sm font-bold text-gray-400">{step?.pct ?? 10}%</span>
+            <span className="text-sm font-bold text-gray-400">{displayPct}%</span>
           </div>
 
           <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden mb-6">
@@ -258,7 +315,7 @@ export default function ProcessLecture() {
               className={`h-full rounded-full transition-all duration-500 ease-out ${
                 isFailed ? 'bg-red-500' : isDone ? 'bg-emerald-500' : 'bg-indigo-600'
               } ${!isDone && !isFailed ? 'relative overflow-hidden' : ''}`} 
-              style={{ width: `${step?.pct ?? 10}%` }}
+              style={{ width: `${displayPct}%` }}
             >
               {!isDone && !isFailed && (
                 <div className="absolute inset-0 bg-white/20" style={{ animation: 'shimmer 1.5s infinite linear', transform: 'skewX(-20deg)' }}></div>
@@ -276,6 +333,12 @@ export default function ProcessLecture() {
             </div>
           )}
 
+          {isDone && !job.duplicate && formatDuration(processingSeconds) && (
+            <p className="text-sm text-gray-500 font-medium text-center mt-4">
+              ⏱ Processed in {formatDuration(processingSeconds)}
+            </p>
+          )}
+
           {isDone && (
             <div className="flex flex-wrap gap-3 mt-8 pt-6 border-t border-gray-100">
               <button 
@@ -286,7 +349,7 @@ export default function ProcessLecture() {
               </button>
               <button 
                 className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-6 py-2.5 rounded-xl font-bold text-sm transition-colors"
-                onClick={() => { setJob(null); setFile(null); setPollStatus(null) }}
+                onClick={() => { setJob(null); setFile(null); setPollStatus(null); setProgress(0); setProgressStage(''); setProcessingSeconds(null) }}
               >
                 Process Another
               </button>

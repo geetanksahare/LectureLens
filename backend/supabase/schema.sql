@@ -15,7 +15,10 @@ create table lectures (
   requested_outputs text[] not null,
   status text not null default 'queued', -- queued | extracting_audio | transcribing | processing | completed | failed
   error_message text,
-  processed_at timestamptz default now()
+  processed_at timestamptz default now(),
+  progress_pct integer not null default 0,
+  progress_stage text,
+  processing_seconds numeric
 );
 
 -- one row per Whisper segment (was transcript_segments) — unchanged shape

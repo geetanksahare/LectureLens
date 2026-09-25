@@ -1,7 +1,9 @@
+import asyncio
 import uuid
 import hashlib
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
+from starlette.requests import ClientDisconnect
 from api.deps import get_current_user
 from api.supabase_client import supabase
 from api.storage import upload_video, copy_video, copy_output
@@ -14,6 +16,7 @@ router = APIRouter()
 
 @router.post("/lectures")
 async def create_lecture(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     requested_outputs: str = Form(...),
@@ -34,7 +37,20 @@ async def create_lecture(
 
     MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 
-    file_bytes = await file.read()
+    # --- NEW: handle the client cancelling mid-upload (Cancel button on the frontend) ---
+    # When the browser aborts the fetch, Starlette raises ClientDisconnect (or the OS
+    # resets the connection) while we're still reading the body. Catch it here so it
+    # never surfaces as a 500 / unhandled traceback — the client is already gone, so
+    # there is nothing useful to return, and nothing should be saved.
+    try:
+        file_bytes = await file.read()
+    except ClientDisconnect:
+        print(f"⚠️  Upload cancelled by client before it finished (user_id={user_id}). Nothing saved.")
+        return
+    except (ConnectionResetError, asyncio.CancelledError):
+        print(f"⚠️  Upload connection dropped/cancelled by client (user_id={user_id}). Nothing saved.")
+        return
+    # --- END NEW ---
 
     # --- NEW: size validation ---
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
@@ -46,7 +62,14 @@ async def create_lecture(
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     # --- END NEW ---
-    
+
+    # --- NEW: catch the case where the client cancelled right after the body
+    # finished but before we've done anything with it yet ---
+    if await request.is_disconnected():
+        print(f"⚠️  Client disconnected right after upload finished (user_id={user_id}). Aborting before saving.")
+        return
+    # --- END NEW ---
+
     content_hash = hashlib.sha256(file_bytes).hexdigest()
 
     # Case 1: this same user already has this exact file processed
@@ -130,6 +153,12 @@ async def create_lecture(
             "message": "This video was already processed by another user. Reused existing results instead of reprocessing.",
             "duplicate": True,
         }
+
+    # --- NEW: one more disconnect check right before the expensive B2 upload ---
+    if await request.is_disconnected():
+        print(f"⚠️  Client disconnected before storage upload started (user_id={user_id}). Skipping.")
+        return
+    # --- END NEW ---
 
     try:
         storage_path = upload_video(user_id, file.filename, file_bytes, content_type=file.content_type)

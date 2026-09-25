@@ -40,6 +40,9 @@ def get_lecture(lecture_id: str, user_id: str = Depends(get_current_user)):
         "requested_outputs": lecture["requested_outputs"],
         "error_message": lecture["error_message"],
         "processed_at": lecture["processed_at"],
+        "progress_pct": lecture.get("progress_pct", 0),
+        "progress_stage": lecture.get("progress_stage"),
+        "processing_seconds": lecture.get("processing_seconds"),
         "outputs": {},
     }
 
